@@ -1,0 +1,87 @@
+version: "2.1"
+services:
+  kafka:
+    image: chengkuan/kafka-2.13-2.8.0:latest
+    ports:
+     - 9092:9092
+     - 9093:9093
+    healthcheck:
+      test:
+        ["CMD", "kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - /var/lib/kafka
+      - /var/lib/zookeeper
+    environment:
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9093
+  kafka-connect:
+    image: chengkuan/kafka-connect-1.6.1.final:latest
+    ports:
+      - 9080:9080
+    healthcheck:
+      test: "curl http://localhost:9080"
+      interval: 2s
+      timeout: 20s
+      retries: 10
+    environment:
+      - KAFKA_LOG4J_OPTS=-Dlog4j.configuration=file:/opt/kafka/config/connect-log4j.properties
+      - KAFKA_CONNECT_BOOTSTRAP_SERVERS=kafka:9092
+      - |
+        KAFKA_CONNECT_CONFIGURATION=
+        key.converter=org.apache.kafka.connect.json.JsonConverter
+        value.converter=org.apache.kafka.connect.json.JsonConverter
+        key.converter.schemas.enable=false
+        value.converter.schemas.enable=false
+        group.id=opay-connect
+        offset.storage.topic=opay-offsets
+        offset.storage.replication.factor=1
+        config.storage.topic=opay-configs
+        config.storage.replication.factor=1
+        status.storage.topic=opay-status
+        status.storage.replication.factor=1
+        consumer.interceptor.classes=io.opentracing.contrib.kafka.TracingConsumerInterceptor
+        producer.interceptor.classes=io.opentracing.contrib.kafka.TracingProducerInterceptor
+        rest.advertised.port=9080
+        rest.port=9080
+    command: /opt/kafka/kafka_connect_run.sh
+  casa-postgres:
+    image: chengkuan/postgres:14
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: "pg_isready -U casa -d casa"
+      interval: 2s
+      timeout: 20s
+      retries: 10
+    environment:
+      - POSTGRES_USER=casa
+      - POSTGRES_PASSWORD=casa
+      - PGPASSWORD=casa
+  casa-service:
+    image: chengkuan/casa-service:latest
+    build:
+      context: CasaService
+      dockerfile: src/main/docker/Dockerfile.${QUARKUS_BUILD:-jvm}
+    healthcheck:
+      test: "curl http://localhost:8080/q/health/live"
+      interval: 2s
+      timeout: 20s
+      retries: 10
+    ports:
+      - 8080:8080
+    links:
+      - casa-postgres
+    environment:
+      - QUARKUS_DEBEZIUM_OUTBOX_REMOVE_AFTER_INSERT=false
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://casa-postgres:5432/casa?currentSchema=payment
+      - QUARKUS_DATASOURCE_USERNAME=casa
+      - QUARKUS_DATASOURCE_PASSWORD=casa
+      - KAFKA_SERVER=kafka:9092
+      - QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION=drop-and-create
+    depends_on:
+      casa-postgres:
+        condition: service_healthy
